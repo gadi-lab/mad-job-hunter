@@ -1,0 +1,32 @@
+name: Daily job scan
+
+on:
+  schedule:
+    # ~07:00 Israel time (UTC+3 in summer). GitHub's cron can run a few
+    # minutes late under load -- that's fine for a once-daily job.
+    - cron: "0 4 * * *"
+  workflow_dispatch: {}  # lets us trigger it manually from the Actions tab to test
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browser
+        run: playwright install --with-deps chromium
+
+      - name: Run pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_MODEL: claude-sonnet-5
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python pipeline.py
