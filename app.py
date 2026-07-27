@@ -123,6 +123,22 @@ df["date_added"] = df["created_at"].apply(lambda s: s[:10] if s else "")
 df["outreach_initiated"] = df["outreach_initiated"].astype(bool)
 df["best_email"] = df["job_contact_email"].fillna(df["company_email"])
 
+# --- Manual scan trigger -----------------------------------------------------
+# Only meaningful when this app is running locally (not the Streamlit Cloud
+# copy): scraping needs a real headless browser (Playwright/Chromium)
+# installed, which only exists on the machine that set this up. Wrapped in
+# try/except so it fails as a clear message rather than a crash if run
+# somewhere without that.
+if st.sidebar.button("🔄 הרץ סריקה עכשיו", use_container_width=True):
+    with st.spinner("סורק משרות ומדרג... זה יכול לקחת כמה דקות"):
+        try:
+            import pipeline
+            stats = pipeline.main()
+            st.sidebar.success(f"הסתיים: {stats}")
+        except Exception as e:
+            st.sidebar.error(f"הסריקה נכשלה (יתכן שהאפליקציה רצה בענן בלי דפדפן מותקן): {e}")
+    st.rerun()
+
 # --- Sidebar filters ---------------------------------------------------------
 st.sidebar.header("סינון")
 min_score = st.sidebar.slider("ציון התאמה מינימלי (fit score) — משרות שטרם דורגו תמיד יוצגו", 0, 100, 0)

@@ -247,7 +247,9 @@ def main():
     stats = parse_new_jobs(raw_jobs)
     _write_last_run(stats)
     _log(f"[pipeline] done: {stats}")
+    return stats
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
+    sys.exit(0)
