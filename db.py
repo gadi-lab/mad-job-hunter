@@ -18,9 +18,9 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-from config import DB_PATH
+from config import DB_PATH, _get_secret
 
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+DATABASE_URL = _get_secret("DATABASE_URL").strip()
 IS_PG = bool(DATABASE_URL)
 
 if IS_PG:

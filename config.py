@@ -8,8 +8,25 @@ load_dotenv(BASE_DIR / ".env")
 
 DB_PATH = BASE_DIR / "data" / "job_hunter.db"
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
+
+def _get_secret(key: str, default: str = "") -> str:
+    """os.getenv first (works locally via .env, and is how Streamlit Cloud
+    is documented to expose flat secrets.toml entries too); falls back to
+    st.secrets so a misconfigured deploy fails loudly rather than silently
+    running on an empty ephemeral SQLite DB. Guarded because this module is
+    also imported by pipeline.py, which has no Streamlit runtime."""
+    val = os.getenv(key, "")
+    if val:
+        return val
+    try:
+        import streamlit as st
+        return str(st.secrets.get(key, default))
+    except Exception:
+        return default
+
+
+ANTHROPIC_API_KEY = _get_secret("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL = _get_secret("CLAUDE_MODEL", "claude-sonnet-5")
 
 GREENHOUSE_BOARD_TOKENS = [t.strip() for t in os.getenv("GREENHOUSE_BOARD_TOKENS", "").split(",") if t.strip()]
 COMEET_COMPANY_UIDS = [t.strip() for t in os.getenv("COMEET_COMPANY_UIDS", "").split(",") if t.strip()]

@@ -12,7 +12,7 @@ import streamlit as st
 import db
 import description_fetch
 import outreach
-from config import BRAND, STATUS_VALUES, BASE_DIR
+from config import BRAND, STATUS_VALUES, BASE_DIR, ANTHROPIC_API_KEY
 
 st.set_page_config(page_title="M:AD Job Hunter", page_icon="🎯", layout="wide")
 
@@ -231,20 +231,26 @@ if len(filtered):
     email_lang = st.radio("שפת הטיוטה", ["אוטומטי (לפי שפת המודעה)", "עברית", "English"], horizontal=True)
     if st.button("צור טיוטת פנייה", type="primary"):
         lang_map = {"אוטומטי (לפי שפת המודעה)": job["language"] or "he", "עברית": "he", "English": "en"}
-        with st.spinner("Claude מנסח את הפנייה..."):
-            draft = outreach.draft_email(
-                company_name=job["company_name"],
-                job_title=job["job_title"],
-                tech_stack=job["required_tech_stack"],
-                language=lang_map[email_lang],
-            )
-        st.session_state["last_draft"] = draft
-        with db.get_conn() as conn:
-            db.insert_outreach_log(
-                conn, job_id=int(job["id"]), contact_person=job["contact_name"],
-                contact_email=job["best_email"], language=lang_map[email_lang],
-                email_subject=draft["subject"], email_body=draft["body"],
-            )
+        if not ANTHROPIC_API_KEY:
+            st.error("לא הוגדר מפתח ANTHROPIC_API_KEY -- לא ניתן להפיק טיוטת פנייה. יש להגדיר אותו בהגדרות ה-Secrets של האפליקציה.")
+        else:
+            try:
+                with st.spinner("Claude מנסח את הפנייה..."):
+                    draft = outreach.draft_email(
+                        company_name=job["company_name"],
+                        job_title=job["job_title"],
+                        tech_stack=job["required_tech_stack"],
+                        language=lang_map[email_lang],
+                    )
+                st.session_state["last_draft"] = draft
+                with db.get_conn() as conn:
+                    db.insert_outreach_log(
+                        conn, job_id=int(job["id"]), contact_person=job["contact_name"],
+                        contact_email=job["best_email"], language=lang_map[email_lang],
+                        email_subject=draft["subject"], email_body=draft["body"],
+                    )
+            except Exception as e:
+                st.error(f"שגיאה ביצירת טיוטת הפנייה: {e}")
 
     if st.session_state.get("last_draft"):
         draft = st.session_state["last_draft"]
