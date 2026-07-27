@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+data/*.db
+data/*.log
+data/scrape_cache.json
+data/last_run.json
+data/final_qualifying.json
+data/restored_check.json
