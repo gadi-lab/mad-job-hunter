@@ -10,6 +10,7 @@ for. Run directly:
     python pipeline.py
 """
 import json
+import os
 import sys
 import time
 
@@ -24,26 +25,40 @@ from config import (
 from scrapers.base import RawJob, within_recency_window
 
 SCRAPE_CACHE_PATH = BASE_DIR / "data" / "scrape_cache.json"
-LAST_RUN_PATH = BASE_DIR / "data" / "last_run.json"
 
-
-def _write_last_run(stats: dict):
-    from datetime import datetime, timezone
-    LAST_RUN_PATH.write_text(
-        json.dumps({"finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "stats": stats}, ensure_ascii=False, indent=1),
-        encoding="utf-8",
-    )
+# All enabled sources, in the order run_scrapers() walks them -- used only
+# to report "step i/N" progress, not to change scraping behavior.
+_ALL_SOURCE_KEYS = ["alljobs", "drushim", "jobmaster", "jobnet", "gotfriends",
+                    "sqlink", "dialog", "secrethunter", "greenhouse", "comeet", "rss"]
 
 
 def _log(msg: str):
     print(msg, flush=True)
 
 
-def run_scrapers() -> list[RawJob]:
+def _detect_run_source() -> str:
+    if os.getenv("GITHUB_ACTIONS"):
+        return "github_actions"
+    return "local"
+
+
+def run_scrapers(progress_cb=None) -> list[RawJob]:
+    """progress_cb(stage: str, current: int, total: int), called once per
+    source as it starts, purely for UI/ETA reporting -- optional."""
     raw_jobs: list[RawJob] = []
+    enabled_sources = [k for k in _ALL_SOURCE_KEYS if SOURCES.get(k, {}).get("enabled")]
+    total = len(enabled_sources)
+    done = 0
+
+    def _tick(name: str):
+        nonlocal done
+        if progress_cb:
+            progress_cb(f"סורק {name}...", done, total)
+        done += 1
 
     if SOURCES["alljobs"]["enabled"]:
         from scrapers import alljobs
+        _tick("alljobs")
         _log("[scrape] alljobs starting...")
         t0 = time.time()
         found = alljobs.scrape(ALL_SEARCH_KEYWORDS)
@@ -52,6 +67,7 @@ def run_scrapers() -> list[RawJob]:
 
     if SOURCES["drushim"]["enabled"]:
         from scrapers import drushim
+        _tick("drushim")
         _log("[scrape] drushim starting...")
         t0 = time.time()
         found = drushim.scrape(ALL_SEARCH_KEYWORDS)
@@ -63,6 +79,7 @@ def run_scrapers() -> list[RawJob]:
     if generic_sites:
         from scrapers import generic_playwright
         for site in generic_sites:
+            _tick(site)
             _log(f"[scrape] {site} starting...")
             t0 = time.time()
             found = generic_playwright.scrape_site(site)
@@ -71,19 +88,24 @@ def run_scrapers() -> list[RawJob]:
 
     if SOURCES["greenhouse"]["enabled"]:
         from scrapers import greenhouse
+        _tick("greenhouse")
         _log("[scrape] greenhouse...")
         raw_jobs += greenhouse.scrape(GREENHOUSE_BOARD_TOKENS)
 
     if SOURCES["comeet"]["enabled"]:
         from scrapers import comeet
+        _tick("comeet")
         _log("[scrape] comeet...")
         raw_jobs += comeet.scrape(COMEET_COMPANY_UIDS)
 
     if SOURCES["rss"]["enabled"]:
         from scrapers import rss_boards
+        _tick("rss")
         _log("[scrape] rss...")
         raw_jobs += rss_boards.scrape(RSS_FEED_URLS)
 
+    if progress_cb:
+        progress_cb("סריקה הושלמה", total, total)
     return raw_jobs
 
 
@@ -200,10 +222,16 @@ def reprocess_pending(conn) -> dict:
     return stats
 
 
-def parse_new_jobs(raw_jobs: list[RawJob]) -> dict:
+def parse_new_jobs(raw_jobs: list[RawJob], progress_cb=None) -> dict:
+    """progress_cb(stage: str, current: int, total: int) -- optional, called
+    once per new (non-duplicate) job for UI/ETA reporting. `total` is an
+    estimate (len(raw_jobs)) since duplicates are only known once checked."""
     stats = {"new": 0, "duplicate": 0, "skipped_too_old": 0, "parsed": 0, "parse_failed": 0, "filtered_out": 0}
+    total = len(raw_jobs)
     with db.get_conn() as conn:
-        for raw in raw_jobs:
+        for i, raw in enumerate(raw_jobs):
+            if progress_cb:
+                progress_cb(f"מדרג: {raw.company_name}", i, total)
             if not raw.job_url:
                 continue
             if db.job_exists(conn, raw.job_url):
@@ -215,17 +243,30 @@ def parse_new_jobs(raw_jobs: list[RawJob]) -> dict:
             conn.commit()  # per-job commit -- see reprocess_pending for why
             _log(f"[pipeline] {raw.company_name} / {raw.job_title[:50]}: {result}")
             time.sleep(0.2)  # gentle pacing against the LLM API
+    if progress_cb:
+        progress_cb("דירוג הושלם", total, total)
     return stats
 
 
-def main():
+def main(progress_cb=None, source: str | None = None):
     """Modes (useful for debugging a slow/stuck phase in isolation):
       python pipeline.py                 -- full run (scrape + parse)
       python pipeline.py --scrape-only    -- scrape all sources, cache to disk, exit
       python pipeline.py --parse-only     -- parse/gate/store from the cached scrape
+
+    progress_cb(stage, current, total) is optional -- passed through to the
+    scrape and parse phases so a caller (e.g. the dashboard's "run now"
+    button) can show a live progress bar / ETA. source identifies who
+    triggered this run ('local' | 'github_actions' | 'button') for the
+    shared pipeline_runs history; auto-detected from the environment if
+    not given explicitly.
     """
     db.init_db()
     args = sys.argv[1:]
+    run_source = source or _detect_run_source()
+
+    with db.get_conn() as conn:
+        run_id = db.start_pipeline_run(conn, run_source)
 
     if "--parse-only" not in args:
         with db.get_conn() as conn:
@@ -237,15 +278,18 @@ def main():
         raw_jobs = _load_scrape_cache()
         _log(f"[pipeline] loaded {len(raw_jobs)} cached raw postings")
     else:
-        raw_jobs = run_scrapers()
+        raw_jobs = run_scrapers(progress_cb=progress_cb)
         _log(f"[pipeline] {len(raw_jobs)} raw postings discovered across all sources")
         _save_scrape_cache(raw_jobs)
         if "--scrape-only" in args:
             _log(f"[pipeline] scrape-only mode: cached to {SCRAPE_CACHE_PATH}, exiting")
+            with db.get_conn() as conn:
+                db.finish_pipeline_run(conn, run_id, {"mode": "scrape-only", "raw_count": len(raw_jobs)})
             return
 
-    stats = parse_new_jobs(raw_jobs)
-    _write_last_run(stats)
+    stats = parse_new_jobs(raw_jobs, progress_cb=progress_cb)
+    with db.get_conn() as conn:
+        db.finish_pipeline_run(conn, run_id, stats)
     _log(f"[pipeline] done: {stats}")
     return stats
 

@@ -3,8 +3,8 @@
 Run with:  streamlit run app.py
 """
 import json
+import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -12,7 +12,7 @@ import streamlit as st
 import db
 import description_fetch
 import outreach
-from config import BRAND, STATUS_VALUES, BASE_DIR, ANTHROPIC_API_KEY
+from config import BRAND, STATUS_VALUES, ANTHROPIC_API_KEY
 
 st.set_page_config(page_title="M:AD Job Hunter", page_icon="🎯", layout="wide")
 
@@ -20,13 +20,26 @@ db.init_db()
 
 MAD_LOGO_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRaiNd0OPnTGGQR1GXeu0GoznOZ5C9UftVA83-9M1ogeQ&s=10"
 
-last_run_info = None
-last_run_path = BASE_DIR / "data" / "last_run.json"
-if last_run_path.exists():
+# Read from the shared DB, not a local file -- last_run needs to reflect
+# whichever machine actually ran the pipeline (this PC, GitHub Actions, or
+# the button below), not just this dashboard's own local runs.
+with db.get_conn() as _conn:
+    last_run_info = db.get_last_completed_run(_conn)
+
+_SOURCE_LABELS = {"local": "מהמחשב המקומי", "github_actions": "מהענן (GitHub Actions)", "button": "כפתור ידני"}
+
+
+def last_run_display(run) -> str:
+    if not run:
+        return "טרם בוצעה ריצה מלאה"
     try:
-        last_run_info = json.loads(last_run_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        pass
+        from zoneinfo import ZoneInfo
+        finished = datetime.fromisoformat(run["finished_at"]).replace(tzinfo=timezone.utc)
+        local_time = finished.astimezone(ZoneInfo("Asia/Jerusalem")).strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        local_time = run["finished_at"]
+    source_label = _SOURCE_LABELS.get(run["source"], run["source"])
+    return f"ריצה אחרונה: {local_time} ({source_label})"
 
 # --- Brand styling: clean/minimal RTL, Assistant font, white/black + one accent
 st.markdown(f"""
@@ -90,7 +103,7 @@ div[data-testid="stMetricValue"] {{ color: var(--mad-ink); font-weight: 700; }}
   <img class="mad-logo-img" src="{MAD_LOGO_URL}" alt="M:AD">
   <div style="color:var(--mad-ink); font-weight:700; font-size:17px;">🕵️ Job Hunter &amp; Lead Generation</div>
   <div class="mad-subtitle">{BRAND['tagline']}</div>
-  <div class="mad-lastrun">{"ריצה אחרונה: " + last_run_info["finished_at"][:16].replace("T"," ") if last_run_info else "טרם בוצעה ריצה מלאה"}</div>
+  <div class="mad-lastrun">{last_run_display(last_run_info)}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -129,14 +142,39 @@ df["best_email"] = df["job_contact_email"].fillna(df["company_email"])
 # installed, which only exists on the machine that set this up. Wrapped in
 # try/except so it fails as a clear message rather than a crash if run
 # somewhere without that.
+with db.get_conn() as _conn:
+    _recent_durations = db.get_recent_run_durations(_conn, limit=5)
+_avg_duration = sum(_recent_durations) / len(_recent_durations) if _recent_durations else None
+
+if _avg_duration:
+    st.sidebar.caption(f"ריצות קודמות ארכו בממוצע כ-{int(_avg_duration // 60)} דקות")
+
 if st.sidebar.button("🔄 הרץ סריקה עכשיו", use_container_width=True):
-    with st.spinner("סורק משרות ומדרג... זה יכול לקחת כמה דקות"):
-        try:
-            import pipeline
-            stats = pipeline.main()
-            st.sidebar.success(f"הסתיים: {stats}")
-        except Exception as e:
-            st.sidebar.error(f"הסריקה נכשלה (יתכן שהאפליקציה רצה בענן בלי דפדפן מותקן): {e}")
+    progress_bar = st.sidebar.progress(0.0)
+    status_text = st.sidebar.empty()
+    start_time = time.time()
+
+    def _progress_cb(stage: str, current: int, total: int):
+        frac = (current / total) if total else 0.0
+        progress_bar.progress(min(frac, 1.0))
+        elapsed = time.time() - start_time
+        eta_note = ""
+        if frac > 0.05:  # need at least a little progress for a sane estimate
+            estimated_total = elapsed / frac
+            remaining = max(estimated_total - elapsed, 0)
+            eta_note = f" -- נותרו כ-{int(remaining // 60)}:{int(remaining % 60):02d} דקות"
+        elif _avg_duration:
+            remaining = max(_avg_duration - elapsed, 0)
+            eta_note = f" -- הערכה לפי ריצות קודמות: כ-{int(remaining // 60)}:{int(remaining % 60):02d} דקות"
+        status_text.caption(f"{stage} ({current}/{total}){eta_note}")
+
+    try:
+        import pipeline
+        stats = pipeline.main(progress_cb=_progress_cb, source="button")
+        progress_bar.progress(1.0)
+        st.sidebar.success(f"הסתיים ({int(time.time()-start_time)} שניות): {stats}")
+    except Exception as e:
+        st.sidebar.error(f"הסריקה נכשלה (יתכן שהאפליקציה רצה בענן בלי דפדפן מותקן): {e}")
     st.rerun()
 
 # --- Sidebar filters ---------------------------------------------------------

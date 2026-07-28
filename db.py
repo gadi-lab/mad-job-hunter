@@ -74,6 +74,14 @@ CREATE TABLE IF NOT EXISTS outreach_logs (
 CREATE INDEX IF NOT EXISTS idx_jobs_fit_score ON jobs(fit_score);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company_id);
+
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,          -- 'local' | 'github_actions' | 'button'
+    started_at TEXT NOT NULL,
+    finished_at TEXT,              -- NULL while still running
+    stats TEXT                     -- JSON, set on finish
+);
 """
 
 SCHEMA_PG = """
@@ -123,6 +131,14 @@ CREATE TABLE IF NOT EXISTS outreach_logs (
 CREATE INDEX IF NOT EXISTS idx_jobs_fit_score ON jobs(fit_score);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company_id);
+
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id SERIAL PRIMARY KEY,
+    source TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    stats TEXT
+);
 """
 
 
@@ -344,3 +360,57 @@ def fetch_jobs_for_dashboard(conn):
            FROM jobs j JOIN companies c ON c.id = j.company_id
            ORDER BY j.fit_score DESC, j.created_at DESC"""
     ).fetchall()
+
+
+def start_pipeline_run(conn, source: str) -> int:
+    """Recorded in the shared DB (not a local file) so 'last run' is
+    accurate regardless of which machine actually ran it -- local PC,
+    GitHub Actions, or the dashboard's own 'run now' button."""
+    if IS_PG:
+        row = conn.execute(
+            "INSERT INTO pipeline_runs (source, started_at) VALUES (?, ?) RETURNING id",
+            (source, now_iso()),
+        ).fetchone()
+        run_id = row["id"]
+    else:
+        cur = conn.execute(
+            "INSERT INTO pipeline_runs (source, started_at) VALUES (?, ?)",
+            (source, now_iso()),
+        )
+        run_id = cur.lastrowid
+    conn.commit()
+    return run_id
+
+
+def finish_pipeline_run(conn, run_id: int, stats: dict):
+    conn.execute(
+        "UPDATE pipeline_runs SET finished_at = ?, stats = ? WHERE id = ?",
+        (now_iso(), json.dumps(stats, ensure_ascii=False), run_id),
+    )
+    conn.commit()
+
+
+def get_last_completed_run(conn):
+    return conn.execute(
+        "SELECT source, started_at, finished_at, stats FROM pipeline_runs "
+        "WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+
+def get_recent_run_durations(conn, limit: int = 5) -> list[float]:
+    """Seconds-elapsed for the last few completed runs -- used to estimate
+    how long a fresh run will take (see app.py's progress/ETA display)."""
+    rows = conn.execute(
+        "SELECT started_at, finished_at FROM pipeline_runs "
+        "WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    durations = []
+    for r in rows:
+        try:
+            start = datetime.fromisoformat(r["started_at"])
+            end = datetime.fromisoformat(r["finished_at"])
+            durations.append((end - start).total_seconds())
+        except (ValueError, TypeError):
+            continue
+    return durations
