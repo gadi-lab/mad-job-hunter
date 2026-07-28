@@ -27,6 +27,13 @@ def _get_secret(key: str, default: str = "") -> str:
 
 ANTHROPIC_API_KEY = _get_secret("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = _get_secret("CLAUDE_MODEL", "claude-sonnet-5")
+# Bulk per-job scoring (parser.py) runs on every scraped posting, every day --
+# this is the cost that actually scales, so it defaults to Anthropic's
+# cheapest current model. Structured extraction against a fixed schema plus a
+# defined scoring rubric doesn't need Sonnet-level reasoning. Outreach email
+# drafting (outreach.py) stays on CLAUDE_MODEL/Sonnet since it only runs on a
+# manual click and benefits from the better writing quality.
+PARSE_MODEL = _get_secret("PARSE_MODEL", "claude-haiku-4-5-20251001")
 
 GREENHOUSE_BOARD_TOKENS = [t.strip() for t in os.getenv("GREENHOUSE_BOARD_TOKENS", "").split(",") if t.strip()]
 COMEET_COMPANY_UIDS = [t.strip() for t in os.getenv("COMEET_COMPANY_UIDS", "").split(",") if t.strip()]

@@ -5,7 +5,7 @@ import json
 
 import anthropic
 
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, CORE_STACK_TERMS
+from config import ANTHROPIC_API_KEY, PARSE_MODEL, CORE_STACK_TERMS
 
 _client = None
 
@@ -79,7 +79,7 @@ def parse_job(raw_title: str, raw_description: str, source: str) -> dict:
     client = _get_client()
     user_text = f"Source: {source}\nTitle: {raw_title}\n\nDescription:\n{raw_description[:8000]}"
     resp = client.messages.create(
-        model=CLAUDE_MODEL,
+        model=PARSE_MODEL,
         max_tokens=1024,
         system=SYSTEM_PROMPT,
         tools=[EXTRACT_TOOL],
