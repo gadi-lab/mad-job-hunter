@@ -115,6 +115,7 @@ def _save_scrape_cache(raw_jobs: list[RawJob]):
          "source": r.source, "raw_description": r.raw_description, "posted_date": r.posted_date}
         for r in raw_jobs
     ]
+    SCRAPE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     SCRAPE_CACHE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
