@@ -3,6 +3,7 @@
 Run with:  streamlit run app.py
 """
 import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -137,45 +138,53 @@ df["outreach_initiated"] = df["outreach_initiated"].astype(bool)
 df["best_email"] = df["job_contact_email"].fillna(df["company_email"])
 
 # --- Manual scan trigger -----------------------------------------------------
-# Only meaningful when this app is running locally (not the Streamlit Cloud
-# copy): scraping needs a real headless browser (Playwright/Chromium)
-# installed, which only exists on the machine that set this up. Wrapped in
-# try/except so it fails as a clear message rather than a crash if run
-# somewhere without that.
+# Only meaningful when this app is running locally (not the Render/Streamlit
+# Cloud copy): scraping needs a real headless browser (Playwright/Chromium)
+# installed, which the cloud build deliberately doesn't install (see
+# render.yaml -- installing it there too would slow every build down and
+# risks the free tier's resource limits, for a button visitors other than
+# the owner shouldn't be triggering anyway). Detected via hosting platforms'
+# own env markers rather than shown-then-failing, so a CEO clicking around
+# the shared link doesn't see a broken-looking error.
+_IS_CLOUD_HOST = bool(os.getenv("RENDER") or os.getenv("DYNO") or os.getenv("STREAMLIT_SHARING_MODE"))
+
 with db.get_conn() as _conn:
     _recent_durations = db.get_recent_run_durations(_conn, limit=5)
 _avg_duration = sum(_recent_durations) / len(_recent_durations) if _recent_durations else None
 
-if _avg_duration:
-    st.sidebar.caption(f"ריצות קודמות ארכו בממוצע כ-{int(_avg_duration // 60)} דקות")
+if _IS_CLOUD_HOST:
+    st.sidebar.caption("🔄 הסריקה האוטומטית רצה מהמחשב המקומי / GitHub Actions -- לא ניתנת להפעלה ידנית מכאן.")
+else:
+    if _avg_duration:
+        st.sidebar.caption(f"ריצות קודמות ארכו בממוצע כ-{int(_avg_duration // 60)} דקות")
 
-if st.sidebar.button("🔄 הרץ סריקה עכשיו", use_container_width=True):
-    progress_bar = st.sidebar.progress(0.0)
-    status_text = st.sidebar.empty()
-    start_time = time.time()
+    if st.sidebar.button("🔄 הרץ סריקה עכשיו", use_container_width=True):
+        progress_bar = st.sidebar.progress(0.0)
+        status_text = st.sidebar.empty()
+        start_time = time.time()
 
-    def _progress_cb(stage: str, current: int, total: int):
-        frac = (current / total) if total else 0.0
-        progress_bar.progress(min(frac, 1.0))
-        elapsed = time.time() - start_time
-        eta_note = ""
-        if frac > 0.05:  # need at least a little progress for a sane estimate
-            estimated_total = elapsed / frac
-            remaining = max(estimated_total - elapsed, 0)
-            eta_note = f" -- נותרו כ-{int(remaining // 60)}:{int(remaining % 60):02d} דקות"
-        elif _avg_duration:
-            remaining = max(_avg_duration - elapsed, 0)
-            eta_note = f" -- הערכה לפי ריצות קודמות: כ-{int(remaining // 60)}:{int(remaining % 60):02d} דקות"
-        status_text.caption(f"{stage} ({current}/{total}){eta_note}")
+        def _progress_cb(stage: str, current: int, total: int):
+            frac = (current / total) if total else 0.0
+            progress_bar.progress(min(frac, 1.0))
+            elapsed = time.time() - start_time
+            eta_note = ""
+            if frac > 0.05:  # need at least a little progress for a sane estimate
+                estimated_total = elapsed / frac
+                remaining = max(estimated_total - elapsed, 0)
+                eta_note = f" -- נותרו כ-{int(remaining // 60)}:{int(remaining % 60):02d} דקות"
+            elif _avg_duration:
+                remaining = max(_avg_duration - elapsed, 0)
+                eta_note = f" -- הערכה לפי ריצות קודמות: כ-{int(remaining // 60)}:{int(remaining % 60):02d} דקות"
+            status_text.caption(f"{stage} ({current}/{total}){eta_note}")
 
-    try:
-        import pipeline
-        stats = pipeline.main(progress_cb=_progress_cb, source="button")
-        progress_bar.progress(1.0)
-        st.sidebar.success(f"הסתיים ({int(time.time()-start_time)} שניות): {stats}")
-    except Exception as e:
-        st.sidebar.error(f"הסריקה נכשלה (יתכן שהאפליקציה רצה בענן בלי דפדפן מותקן): {e}")
-    st.rerun()
+        try:
+            import pipeline
+            stats = pipeline.main(progress_cb=_progress_cb, source="button")
+            progress_bar.progress(1.0)
+            st.sidebar.success(f"הסתיים ({int(time.time()-start_time)} שניות): {stats}")
+        except Exception as e:
+            st.sidebar.error(f"הסריקה נכשלה (יתכן שהאפליקציה רצה בענן בלי דפדפן מותקן): {e}")
+        st.rerun()
 
 # --- Sidebar filters ---------------------------------------------------------
 st.sidebar.header("סינון")
