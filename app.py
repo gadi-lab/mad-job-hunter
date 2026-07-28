@@ -110,7 +110,7 @@ div[data-testid="stMetricValue"] {{ color: var(--mad-ink); font-weight: 700; }}
 
 
 def days_since(iso_str: str | None) -> int | None:
-    if not iso_str:
+    if not iso_str or not isinstance(iso_str, str):
         return None
     try:
         dt = datetime.fromisoformat(iso_str)
