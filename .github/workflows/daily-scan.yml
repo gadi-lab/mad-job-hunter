@@ -1,11 +1,12 @@
-name: Daily job scan
+name: Weekly job scan
 
 on:
   schedule:
-    # ~07:00 Israel time (UTC+3 in summer). GitHub's cron can run a few
-    # minutes late under load -- that's fine for a once-daily job.
-    - cron: "0 4 * * *"
-  workflow_dispatch: {}  # lets us trigger it manually from the Actions tab to test
+    # Sunday ~07:00 Israel time (UTC+3 in summer) -- one automatic run/week to
+    # keep API cost down. Any additional run in between is triggered by hand
+    # (the dashboard's "run scan now" button, or workflow_dispatch below).
+    - cron: "0 4 * * 0"
+  workflow_dispatch: {}  # lets us trigger it manually from the Actions tab, any time, as an ad hoc run
 
 jobs:
   scan:
