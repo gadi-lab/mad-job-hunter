@@ -304,7 +304,9 @@ if len(filtered):
                         email_subject=draft["subject"], email_body=draft["body"],
                     )
             except Exception as e:
-                st.error(f"שגיאה ביצירת טיוטת הפנייה: {e}")
+                import traceback
+                print(f"[outreach draft error] {traceback.format_exc()}", flush=True)
+                st.error(f"שגיאה ביצירת טיוטת הפנייה: {type(e).__name__}: {e}")
 
     if st.session_state.get("last_draft"):
         draft = st.session_state["last_draft"]
