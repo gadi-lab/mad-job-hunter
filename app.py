@@ -4,6 +4,7 @@ Run with:  streamlit run app.py
 """
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -152,39 +153,74 @@ with db.get_conn() as _conn:
     _recent_durations = db.get_recent_run_durations(_conn, limit=5)
 _avg_duration = sum(_recent_durations) / len(_recent_durations) if _recent_durations else None
 
+if "scan_thread" not in st.session_state:
+    st.session_state.scan_thread = None
+    st.session_state.scan_progress = {"stage": "", "current": 0, "total": 0}
+    st.session_state.scan_result = None
+    st.session_state.scan_error = None
+    st.session_state.scan_start_time = None
+
+
+def _run_scan_in_background():
+    """Runs on a background thread so the multi-minute scrape/score pass
+    never blocks Streamlit's script thread -- a blocked thread can't answer
+    the browser's WebSocket keepalive, which made the frontend think the
+    server died and reconnect, silently starting a SECOND competing scan on
+    top of the first (confirmed in pipeline_runs: two rows started 2 minutes
+    apart, neither ever finished). Progress is reported via session_state;
+    the main thread just polls and re-renders it every second."""
+    def _progress_cb(stage: str, current: int, total: int):
+        st.session_state.scan_progress = {"stage": stage, "current": current, "total": total}
+    try:
+        import pipeline
+        stats = pipeline.main(progress_cb=_progress_cb, source="button")
+        st.session_state.scan_result = stats
+    except Exception as e:
+        st.session_state.scan_error = str(e)
+    finally:
+        st.session_state.scan_thread = None
+
+
 if _IS_CLOUD_HOST:
     st.sidebar.caption("🔄 הסריקה האוטומטית רצה מהמחשב המקומי / GitHub Actions -- לא ניתנת להפעלה ידנית מכאן.")
 else:
     if _avg_duration:
         st.sidebar.caption(f"ריצות קודמות ארכו בממוצע כ-{int(_avg_duration // 60)} דקות")
 
-    if st.sidebar.button("🔄 הרץ סריקה עכשיו", use_container_width=True):
-        progress_bar = st.sidebar.progress(0.0)
-        status_text = st.sidebar.empty()
-        start_time = time.time()
+    _scan_running = st.session_state.scan_thread is not None and st.session_state.scan_thread.is_alive()
 
-        def _progress_cb(stage: str, current: int, total: int):
-            frac = (current / total) if total else 0.0
-            progress_bar.progress(min(frac, 1.0))
-            elapsed = time.time() - start_time
-            eta_note = ""
-            if frac > 0.05:  # need at least a little progress for a sane estimate
-                estimated_total = elapsed / frac
-                remaining = max(estimated_total - elapsed, 0)
-                eta_note = f" -- נותרו כ-{int(remaining // 60)}:{int(remaining % 60):02d} דקות"
-            elif _avg_duration:
-                remaining = max(_avg_duration - elapsed, 0)
-                eta_note = f" -- הערכה לפי ריצות קודמות: כ-{int(remaining // 60)}:{int(remaining % 60):02d} דקות"
-            status_text.caption(f"{stage} ({current}/{total}){eta_note}")
-
-        try:
-            import pipeline
-            stats = pipeline.main(progress_cb=_progress_cb, source="button")
-            progress_bar.progress(1.0)
-            st.sidebar.success(f"הסתיים ({int(time.time()-start_time)} שניות): {stats}")
-        except Exception as e:
-            st.sidebar.error(f"הסריקה נכשלה (יתכן שהאפליקציה רצה בענן בלי דפדפן מותקן): {e}")
+    if st.sidebar.button("🔄 הרץ סריקה עכשיו", use_container_width=True, disabled=_scan_running):
+        st.session_state.scan_result = None
+        st.session_state.scan_error = None
+        st.session_state.scan_progress = {"stage": "מתחיל...", "current": 0, "total": 1}
+        st.session_state.scan_start_time = time.time()
+        t = threading.Thread(target=_run_scan_in_background, daemon=True)
+        st.session_state.scan_thread = t
+        t.start()
         st.rerun()
+
+    if _scan_running:
+        p = st.session_state.scan_progress
+        frac = (p["current"] / p["total"]) if p["total"] else 0.0
+        st.sidebar.progress(min(frac, 1.0))
+        elapsed = time.time() - st.session_state.scan_start_time
+        eta_note = ""
+        if frac > 0.05:  # need at least a little progress for a sane estimate
+            estimated_total = elapsed / frac
+            remaining = max(estimated_total - elapsed, 0)
+            eta_note = f" -- נותרו כ-{int(remaining // 60)}:{int(remaining % 60):02d} דקות"
+        elif _avg_duration:
+            remaining = max(_avg_duration - elapsed, 0)
+            eta_note = f" -- הערכה לפי ריצות קודמות: כ-{int(remaining // 60)}:{int(remaining % 60):02d} דקות"
+        st.sidebar.caption(f"{p['stage']} ({p['current']}/{p['total']}){eta_note}")
+        time.sleep(1)
+        st.rerun()
+    elif st.session_state.scan_result is not None:
+        st.sidebar.success(f"הסתיים ({int(time.time()-st.session_state.scan_start_time)} שניות): {st.session_state.scan_result}")
+        st.session_state.scan_result = None
+    elif st.session_state.scan_error is not None:
+        st.sidebar.error(f"הסריקה נכשלה: {st.session_state.scan_error}")
+        st.session_state.scan_error = None
 
 # --- Sidebar filters ---------------------------------------------------------
 st.sidebar.header("סינון")
