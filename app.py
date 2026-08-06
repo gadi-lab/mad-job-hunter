@@ -153,32 +153,35 @@ with db.get_conn() as _conn:
     _recent_durations = db.get_recent_run_durations(_conn, limit=5)
 _avg_duration = sum(_recent_durations) / len(_recent_durations) if _recent_durations else None
 
-if "scan_thread" not in st.session_state:
-    st.session_state.scan_thread = None
-    st.session_state.scan_progress = {"stage": "", "current": 0, "total": 0}
-    st.session_state.scan_result = None
-    st.session_state.scan_error = None
-    st.session_state.scan_start_time = None
+if "scan_state" not in st.session_state:
+    # A plain dict, mutated in place by the background thread below --
+    # deliberately NOT touching st.session_state.<attr> = ... from that
+    # thread. Streamlit's session_state proxy needs a ScriptRunContext to
+    # know which session a write belongs to; a raw thread doesn't have one
+    # (confirmed via repeated "missing ScriptRunContext" warnings in
+    # logs/dashboard.log), so those writes silently never reached the
+    # browser -- the progress caption stayed frozen on "מתחיל... (0/1)"
+    # even though the scan itself was running fine. Reading/mutating the
+    # SAME plain dict object from both threads sidesteps that entirely.
+    st.session_state.scan_state = {
+        "thread": None, "progress": {"stage": "", "current": 0, "total": 0},
+        "result": None, "error": None, "start_time": None,
+    }
+
+_scan = st.session_state.scan_state
 
 
-def _run_scan_in_background():
-    """Runs on a background thread so the multi-minute scrape/score pass
-    never blocks Streamlit's script thread -- a blocked thread can't answer
-    the browser's WebSocket keepalive, which made the frontend think the
-    server died and reconnect, silently starting a SECOND competing scan on
-    top of the first (confirmed in pipeline_runs: two rows started 2 minutes
-    apart, neither ever finished). Progress is reported via session_state;
-    the main thread just polls and re-renders it every second."""
+def _run_scan_in_background(shared: dict):
     def _progress_cb(stage: str, current: int, total: int):
-        st.session_state.scan_progress = {"stage": stage, "current": current, "total": total}
+        shared["progress"] = {"stage": stage, "current": current, "total": total}
     try:
         import pipeline
         stats = pipeline.main(progress_cb=_progress_cb, source="button")
-        st.session_state.scan_result = stats
+        shared["result"] = stats
     except Exception as e:
-        st.session_state.scan_error = str(e)
+        shared["error"] = str(e)
     finally:
-        st.session_state.scan_thread = None
+        shared["thread"] = None
 
 
 if _IS_CLOUD_HOST:
@@ -187,23 +190,23 @@ else:
     if _avg_duration:
         st.sidebar.caption(f"ריצות קודמות ארכו בממוצע כ-{int(_avg_duration // 60)} דקות")
 
-    _scan_running = st.session_state.scan_thread is not None and st.session_state.scan_thread.is_alive()
+    _scan_running = _scan["thread"] is not None and _scan["thread"].is_alive()
 
     if st.sidebar.button("🔄 הרץ סריקה עכשיו", use_container_width=True, disabled=_scan_running):
-        st.session_state.scan_result = None
-        st.session_state.scan_error = None
-        st.session_state.scan_progress = {"stage": "מתחיל...", "current": 0, "total": 1}
-        st.session_state.scan_start_time = time.time()
-        t = threading.Thread(target=_run_scan_in_background, daemon=True)
-        st.session_state.scan_thread = t
+        _scan["result"] = None
+        _scan["error"] = None
+        _scan["progress"] = {"stage": "מתחיל...", "current": 0, "total": 1}
+        _scan["start_time"] = time.time()
+        t = threading.Thread(target=_run_scan_in_background, args=(_scan,), daemon=True)
+        _scan["thread"] = t
         t.start()
         st.rerun()
 
     if _scan_running:
-        p = st.session_state.scan_progress
+        p = _scan["progress"]
         frac = (p["current"] / p["total"]) if p["total"] else 0.0
         st.sidebar.progress(min(frac, 1.0))
-        elapsed = time.time() - st.session_state.scan_start_time
+        elapsed = time.time() - _scan["start_time"]
         eta_note = ""
         if frac > 0.05:  # need at least a little progress for a sane estimate
             estimated_total = elapsed / frac
@@ -215,12 +218,12 @@ else:
         st.sidebar.caption(f"{p['stage']} ({p['current']}/{p['total']}){eta_note}")
         time.sleep(1)
         st.rerun()
-    elif st.session_state.scan_result is not None:
-        st.sidebar.success(f"הסתיים ({int(time.time()-st.session_state.scan_start_time)} שניות): {st.session_state.scan_result}")
-        st.session_state.scan_result = None
-    elif st.session_state.scan_error is not None:
-        st.sidebar.error(f"הסריקה נכשלה: {st.session_state.scan_error}")
-        st.session_state.scan_error = None
+    elif _scan["result"] is not None:
+        st.sidebar.success(f"הסתיים ({int(time.time()-_scan['start_time'])} שניות): {_scan['result']}")
+        _scan["result"] = None
+    elif _scan["error"] is not None:
+        st.sidebar.error(f"הסריקה נכשלה: {_scan['error']}")
+        _scan["error"] = None
 
 # --- Sidebar filters ---------------------------------------------------------
 st.sidebar.header("סינון")
