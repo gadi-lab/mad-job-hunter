@@ -16,6 +16,7 @@ import time
 
 import db
 import enrichment
+import link_check
 import parser as llm_parser
 from relevance import passes_hard_filter
 from config import (
@@ -198,6 +199,20 @@ def process_new_job(conn, raw: RawJob):
     )
 
 
+def sweep_expired_links() -> int:
+    """Re-checks every job currently shown on the dashboard against its
+    source URL and archives any that the source site has since taken down
+    (filled/expired) -- see link_check.py for why this is needed."""
+    with db.get_conn() as conn:
+        dead_ids = link_check.find_dead_job_ids(conn)
+        for job_id in dead_ids:
+            db.set_job_status(conn, job_id, "ARCHIVED")
+            conn.commit()
+    if dead_ids:
+        _log(f"[pipeline] archived {len(dead_ids)} expired job link(s): {dead_ids}")
+    return len(dead_ids)
+
+
 def reprocess_pending(conn) -> dict:
     """One-time-per-backlog catch-up: score/gate any jobs that were
     inserted before an API key was available (fit_score IS NULL), so a
@@ -268,6 +283,10 @@ def main(progress_cb=None, source: str | None = None):
 
     with db.get_conn() as conn:
         run_id = db.start_pipeline_run(conn, run_source)
+
+    archived_count = sweep_expired_links()
+    if archived_count:
+        _log(f"[pipeline] {archived_count} previously-shown job(s) were removed from the source site and archived")
 
     if "--parse-only" not in args:
         with db.get_conn() as conn:
