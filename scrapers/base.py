@@ -1,4 +1,5 @@
 """Shared types & helpers for every scraper module."""
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -6,6 +7,24 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import MAX_JOB_AGE_DAYS, ALL_SEARCH_KEYWORDS  # noqa: E402
+
+
+def launch_chromium(p, **kwargs):
+    """p.chromium.launch(), retried on the intermittent 'Executable doesn't
+    exist' error seen locally on this machine even though the file is
+    confirmed present and launchable moments before/after the failure --
+    most likely Symantec's real-time scanner transiently locking the binary.
+    A short retry clears it without needing to chase the AV further."""
+    last_err = None
+    for attempt in range(3):
+        try:
+            return p.chromium.launch(**kwargs)
+        except Exception as e:
+            last_err = e
+            if "Executable doesn't exist" not in str(e):
+                raise
+            time.sleep(2)
+    raise last_err
 
 
 @dataclass

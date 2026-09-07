@@ -20,7 +20,7 @@ import re
 
 from playwright.sync_api import sync_playwright
 
-from .base import RawJob
+from .base import RawJob, launch_chromium
 
 JOB_NAV_HINTS = ["job", "position", "vacan", "career", "משרות", "דרושים", "לוח"]
 JOB_HREF_HINTS = re.compile(r"job|position|vacan|mishr|drush|career", re.IGNORECASE)
@@ -79,7 +79,7 @@ def scrape_site(site_key: str, max_jobs: int = 100) -> list[RawJob]:
     cfg = SITE_CONFIGS[site_key]
     jobs: dict[str, RawJob] = {}
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, timeout=15000)
+        browser = launch_chromium(p, headless=True, timeout=15000)
         page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         try:
             # networkidle times out on ad-heavy pages that never go quiet;
