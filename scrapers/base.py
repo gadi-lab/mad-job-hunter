@@ -9,21 +9,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import MAX_JOB_AGE_DAYS, ALL_SEARCH_KEYWORDS  # noqa: E402
 
 
+_RETRY_DELAYS_SEC = [3, 6, 12, 20, 30]  # ~70s total -- a first 3x2s retry (2026-08) wasn't
+                                        # enough to ride out whatever transiently locks the
+                                        # binary (confirmed: the file is present and launches
+                                        # fine moments before/after a failure), so this gives
+                                        # it much longer before actually giving up.
+
+
 def launch_chromium(p, **kwargs):
     """p.chromium.launch(), retried on the intermittent 'Executable doesn't
     exist' error seen locally on this machine even though the file is
     confirmed present and launchable moments before/after the failure --
     most likely Symantec's real-time scanner transiently locking the binary.
-    A short retry clears it without needing to chase the AV further."""
+    Logs each retry so a persistent failure is visible in logs/dashboard.log
+    rather than just looking like one opaque crash."""
     last_err = None
-    for attempt in range(3):
+    for attempt, delay in enumerate([0] + _RETRY_DELAYS_SEC, start=1):
+        if delay:
+            time.sleep(delay)
         try:
             return p.chromium.launch(**kwargs)
         except Exception as e:
             last_err = e
             if "Executable doesn't exist" not in str(e):
                 raise
-            time.sleep(2)
+            print(f"[launch_chromium] attempt {attempt} failed (Executable doesn't exist), "
+                  f"retrying...", flush=True)
+    print(f"[launch_chromium] gave up after {len(_RETRY_DELAYS_SEC) + 1} attempts", flush=True)
     raise last_err
 
 
