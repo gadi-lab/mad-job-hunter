@@ -1,0 +1,32 @@
+name: Keep Supabase alive
+
+on:
+  schedule:
+    # Daily. Supabase free-tier projects pause after ~1 week without activity,
+    # which takes the dashboard, Render and the weekly scan down with them.
+    - cron: "23 5 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install psycopg2-binary
+
+      - name: Query the database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import os, psycopg2
+          conn = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=20)
+          cur = conn.cursor()
+          cur.execute("select count(*) from jobs")
+          print("database reachable, jobs =", cur.fetchone()[0])
+          conn.close()
+          PY
